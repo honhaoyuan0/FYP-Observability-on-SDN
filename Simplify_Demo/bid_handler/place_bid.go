@@ -10,10 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	pb "../proto/pb"
+	pb "github.com/honhaoyuan0/FYP-Observability-on-SDN/Simplify_Demo/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golangorg/grpc/credentials/secure"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
