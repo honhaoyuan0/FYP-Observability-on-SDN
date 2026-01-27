@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package auctionpb;
+option go_package = "github.com/honhaoyuan0/FYP-Observability-on-SDN/Simplify_Demo/proto";
+
+message BidRequest {
+  string user = 1;
+  int32 bid_value = 2;
+  int32 bandwidth_value = 3;
+  int32 auction_round = 4;
+}
+
+message BidResponse {
+  bool won = 1;
+  string message = 2;
+}
+
+service Auction {
+  rpc PlaceBid(BidRequest) returns (BidResponse);
+}
