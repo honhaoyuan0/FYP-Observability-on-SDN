@@ -1,20 +1,27 @@
+FROM golang:1.25-alpine AS builder
 
+WORKDIR /app
+# Copy proto module and service module
+COPY proto/ ./proto/
+COPY auction_runner/go.mod auction_runner/go.sum* ./auction_runner/
 
-go mod init auction_runner
+WORKDIR /app/auction_runner
+RUN go mod download
 
-go get "go.opentelemetry.io/otel" \
-  "go.opentelemetry.io/otel/exporters/stdout/stdoutmetric" \
-  "go.opentelemetry.io/otel/exporters/stdout/stdouttrace" \
-  "go.opentelemetry.io/otel/exporters/stdout/stdoutlog" \
-  "go.opentelemetry.io/otel/sdk/log" \
-  "go.opentelemetry.io/otel/log/global" \
-  "go.opentelemetry.io/otel/propagation" \
-  "go.opentelemetry.io/otel/sdk/metric" \
-  "go.opentelemetry.io/otel/sdk/resource" \
-  "go.opentelemetry.io/otel/sdk/trace" \
-  "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"\
-  "go.opentelemetry.io/contrib/bridges/otelslog"
+# Copy auction_runner source code
+COPY auction_runner/*.go ./
 
-go mod tidy
-export OTEL_RESOURCE_ATTRIBUTES="service.name=auction_runner"
-go run .
+# Build
+RUN CGO_ENABLED=0 GOOS=linux go build -o auction_runner .
+
+# Final stage
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+COPY --from=builder /app/auction_runner .
+
+EXPOSE 50051
+
+CMD ["./auction_runner"]

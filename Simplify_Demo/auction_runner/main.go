@@ -9,23 +9,9 @@ import (
 	"os/signal"
 
 	pb "github.com/honhaoyuan0/FYP-Observability-on-SDN/Simplify_Demo/proto"
-	"google.golang.org/grpc"
-
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"google.golang.org/grpc"
 )
-
-type server struct {
-	pb.UnimplementedAuctionServer
-}
-
-func (s *server) PlaceBid(ctx context.Context, req *pb.BidRequest) (*pb.BidResponse, error) {
-	won := (req.BidValue > 50)
-	msg := "rejected"
-	if won {
-		msg = "accepted"
-	}
-	return &pb.BidResponse{Won: won, Message: msg}, nil
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -52,11 +38,13 @@ func run() error {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Temporarily omit the OpenTelemetry gRPC interceptor to avoid
+	// compatibility issues with the otelgrpc package/version.
 	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(otelgrpc.UnaryServerInterceptor()),
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 	)
 
-	pb.RegisterAuctionServer(grpcServer, &server{})
+	pb.RegisterAuctionServer(grpcServer, NewAuctionServer())
 	log.Println("Auction Runner gRPC listening :50051")
 
 	// Serve in goroutine and stop gracefully on ctx cancellation.

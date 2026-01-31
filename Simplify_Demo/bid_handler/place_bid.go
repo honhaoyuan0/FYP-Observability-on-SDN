@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -15,10 +15,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 )
 
 const name = "place_bid"
@@ -45,8 +44,8 @@ func place_bid(w http.ResponseWriter, r *http.Request) {
 	var bidValue int
 	if v, err := strconv.Atoi(bidStr); err != nil {
 		logger.ErrorContext(ctx, "Invalid Bid Value",
-			attribute.String("error", err.Error()),
-			attribute.String("user", user),
+			"error", err.Error(),
+			"user", user,
 		)
 	} else {
 		bidValue = v
@@ -55,19 +54,27 @@ func place_bid(w http.ResponseWriter, r *http.Request) {
 	var bandwidthValue int
 	if v, err := strconv.Atoi(bandwidthStr); err != nil {
 		logger.ErrorContext(ctx, "Invalid Bandwidth Value",
-			attribute.String("error", err.Error()),
-			attribute.String("user", user),
+			"error", err.Error(),
+			"user", user,
 		)
 	} else {
 		bandwidthValue = v
 	}
 
+	logger.InfoContext(ctx,
+		"User bids received successfully!",
+		"auction_round", auction_round,
+		"user", user,
+		"bid_value", bidValue,
+		"bandwidth_value", bandwidthValue,
+	)
+
 	msg = fmt.Sprintf("%s is placing a bid of %d for bandwidth of %d at auction round %d", user, bidValue, bandwidthValue, auction_round)
 	logger.InfoContext(ctx, msg,
-		attribute.Int("auction_round", auction_round),
-		attribute.String("user", user),
-		attribute.Int("bid_value", bidValue),
-		attribute.Int("bandwidth_value", bandwidthValue),
+		"auction_round", auction_round,
+		"user", user,
+		"bid_value", bidValue,
+		"bandwidth_value", bandwidthValue,
 	)
 
 	span.SetAttributes(
@@ -77,12 +84,18 @@ func place_bid(w http.ResponseWriter, r *http.Request) {
 		attribute.Int("bandwidth_value", bandwidthValue),
 	)
 
-	ctxDial, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
+	// Resolve Auction Runner address from environment for Docker networking
+	addr := os.Getenv("AUCTION_RUNNER_ADDR")
+	if addr == "" {
+		addr = "auction-runner:50051"
+	}
 
-	conn, err := grpc.DialContext(ctxDial, "localhost:50051", 
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	
+	conn, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		// REPLACEMENT: Use WithStatsHandler instead of WithUnaryInterceptor
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
+
 	if err != nil {
 		// log, set span error and return HTTP 500
 		http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
@@ -93,10 +106,10 @@ func place_bid(w http.ResponseWriter, r *http.Request) {
 
 	client := pb.NewAuctionClient(conn)
 	grpcReq := &pb.BidRequest{
-		User: user,
-		BidValue: int32(bidValue),
-		BandwidthValue: int32(bandwithValue)
-		AuctionRound: int32(auction_round)
+		User:           user,
+		BidValue:       int32(bidValue),
+		BandwidthValue: int32(bandwidthValue),
+		AuctionRound:   int32(auction_round),
 	}
 
 	grpcCtx, cancel2 := context.WithTimeout(ctx, 3*time.Second)
@@ -104,16 +117,37 @@ func place_bid(w http.ResponseWriter, r *http.Request) {
 
 	grpcResp, err := client.PlaceBid(grpcCtx, grpcReq)
 	if err != nil {
-	// record/log error on span
-	http.Error(w, "rpc error", http.StatusInternalServerError)
-	return
+		// record/log error on span
+		http.Error(w, "rpc error", http.StatusInternalServerError)
+		return
 	}
+
+	// New child span for encoding & sending the HTTP response
+	_, respSpan := tracer.Start(ctx, "encode-response")
+	respSpan.SetAttributes(
+		attribute.Bool("won", grpcResp.GetWon()),
+		attribute.String("message", grpcResp.GetMessage()),
+	)
+	defer respSpan.End()
 
 	// reply to original HTTP caller (JSON)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-	"won":    grpcResp.GetWon(),
-	"message": grpcResp.GetMessage(),
+		"won":     grpcResp.GetWon(),
+		"message": grpcResp.GetMessage(),
 	})
+	logger.InfoContext(ctx,
+		"Response received!",
+		"auction_round", auction_round,
+		"user", user,
+		"bid_value", bidValue,
+		"bandwidth_value", bandwidthValue,
+	)
+	respSpan.SetAttributes(
+		attribute.Int("auction_round", auction_round),
+		attribute.String("user", user),
+		attribute.Int("bid_value", bidValue),
+		attribute.Int("bandwidth_value", bandwidthValue),
+	)
 
 }

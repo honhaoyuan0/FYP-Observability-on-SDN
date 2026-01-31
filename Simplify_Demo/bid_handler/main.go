@@ -46,6 +46,7 @@ func run() error {
 	go func() {
 		srvErr <- srv.ListenAndServe()
 	}()
+	log.Println("Bid handler is listening on port 8080")
 
 	// Wait for interruption.
 	select {

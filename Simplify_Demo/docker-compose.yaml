@@ -1,0 +1,144 @@
+services:
+  # Jaeger - all-in-one for traces (includes UI)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - observability
+
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml
+      - ./loki/data:/var/loki
+    networks:
+      - observability
+    
+
+  # OTEL Collector - collects and forwards to Jaeger
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel_collector/otel-collector-config.yaml:/etc/otelcol/config.yaml
+    ports:
+      - "4317:4317"     # OTLP gRPC receiver
+      - "4318:4318"     # OTLP HTTP receiver
+      - "13133:13133"   # health check
+    networks:
+      - observability
+    depends_on:
+      - jaeger
+      - loki
+
+  # Auction Runner - gRPC service
+  auction-runner:
+    build:
+      context: .
+      dockerfile: auction_runner/Dockerfile
+    ports:
+      - "50051:50051"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
+      - OTEL_SERVICE_NAME=auction-runner
+      - OTEL_RESOURCE_ATTRIBUTES=service.name=auction-runner
+    networks:
+      - observability
+    depends_on:
+      - otel-collector
+
+  # Bid Handler - HTTP service
+  bid-handler:
+    build:
+      context: .
+      dockerfile: bid_handler/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
+      - OTEL_SERVICE_NAME=bid-handler
+      - OTEL_RESOURCE_ATTRIBUTES=service.name=bid-handler
+      - AUCTION_RUNNER_ADDR=auction-runner:50051
+    networks:
+      - observability
+    depends_on:
+      - otel-collector
+      - auction-runner
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    hostname: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    depends_on:
+      - otel-collector
+    ports:
+      - "9092:9092"
+    networks:
+      - observability
+
+  kafka-producer:
+    build:
+      context: .
+      dockerfile: kafka_producer/Dockerfile
+    environment:
+      - KAFKA_SERVER=kafka:9092
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
+      - OTEL_SERVICE_NAME=kafka-producer
+    depends_on:
+      - kafka
+      - otel-collector
+    networks:
+      - observability
+
+  kafka-consumer:
+    build:
+      context: .
+      dockerfile: kafka_consumer/Dockerfile
+    environment:
+      - KAFKA_SERVER=kafka:9092
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
+      - OTEL_SERVICE_NAME=kafka-consumer
+    depends_on:
+      - kafka
+      - otel-collector
+    networks:
+      - observability
+
+  # Grafana - visualization (Jaeger datasource)
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - observability
+    depends_on:
+      - jaeger
+      - loki
+
+networks:
+  observability:
+    driver: bridge

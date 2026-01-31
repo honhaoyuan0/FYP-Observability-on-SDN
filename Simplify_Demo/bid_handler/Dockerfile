@@ -1,20 +1,27 @@
+FROM golang:1.25-alpine AS builder
 
+WORKDIR /app
+# Copy proto module and service module
+COPY proto/ ./proto/
+COPY bid_handler/go.mod bid_handler/go.sum* ./bid_handler/
 
-go mod init bid_handler
+WORKDIR /app/bid_handler
+RUN go mod download
 
-go get "go.opentelemetry.io/otel" \
-  "go.opentelemetry.io/otel/exporters/stdout/stdoutmetric" \
-  "go.opentelemetry.io/otel/exporters/stdout/stdouttrace" \
-  "go.opentelemetry.io/otel/exporters/stdout/stdoutlog" \
-  "go.opentelemetry.io/otel/sdk/log" \
-  "go.opentelemetry.io/otel/log/global" \
-  "go.opentelemetry.io/otel/propagation" \
-  "go.opentelemetry.io/otel/sdk/metric" \
-  "go.opentelemetry.io/otel/sdk/resource" \
-  "go.opentelemetry.io/otel/sdk/trace" \
-  "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"\
-  "go.opentelemetry.io/contrib/bridges/otelslog"
+# Copy bid_handler source code
+COPY bid_handler/*.go ./
 
-go mod tidy
-export OTEL_RESOURCE_ATTRIBUTES="service.name=bid_handler"
-go run .
+# Build
+RUN CGO_ENABLED=0 GOOS=linux go build -o bid_handler .
+
+# Final stage
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+COPY --from=builder /app/bid_handler .
+
+EXPOSE 8080
+
+CMD ["./bid_handler"]
